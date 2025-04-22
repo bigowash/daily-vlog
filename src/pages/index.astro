@@ -1,0 +1,565 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout>
+  <head>
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+      rel="stylesheet"
+    />
+  </head>
+  <header class="main-header">
+    <div class="timestamp" id="current-date">LOADING DATE...</div>
+    <h1 class="vlog-header">DAILY VLOG</h1>
+    <div class="system-status">
+      <div class="flex items-center">
+        <span class="status-indicator status-idle" id="status-indicator"></span>
+        <span class="text-xs uppercase" id="status-text">SYSTEM IDLE</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="main-content">
+    <section class="archive-section" id="vlogs-section">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold uppercase">Archive</h2>
+        <div class="flex gap-2">
+          <button id="sort-newest" class="btn btn-secondary text-xs"
+            >NEWEST</button
+          >
+          <button id="sort-oldest" class="btn btn-secondary text-xs"
+            >OLDEST</button
+          >
+        </div>
+      </div>
+
+      <div id="vlogs-container">
+        <div class="terminal-window">
+          <p class="text-xs text-center">// NO VLOGS FOUND</p>
+          <p class="text-xs text-center">// START RECORDING YOUR FIRST VLOG</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="recording-section" id="record-section">
+      <div class="input-group mb-4">
+        <label for="vlog-title">VLOG TITLE</label>
+        <input type="text" id="vlog-title" placeholder="ENTER VLOG TITLE" />
+      </div>
+
+      <div class="video-container" id="video-preview">
+        <canvas id="videoCanvas" class="video-canvas"></canvas>
+        <div class="media-controls">
+          <button id="recordButton" class="control-btn">
+            <i class="fas fa-circle"></i>
+          </button>
+          <button id="stopButton" class="control-btn" disabled>
+            <i class="fas fa-stop"></i>
+          </button>
+          <button id="save-vlog" class="control-btn" disabled>
+            <i class="fas fa-save"></i>
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+</Layout>
+
+<script>
+  // Variables to store recording state and data
+  let mediaRecorder: MediaRecorder | null = null;
+  let recordedChunks: Blob[] = [];
+  let videoStream: MediaStream | null = null;
+  let isRecording = false;
+  let canvasContext: CanvasRenderingContext2D | null = null;
+  let videoElement: HTMLVideoElement | null = null;
+  interface Vlog {
+    id: string;
+    title: string;
+    date: Date;
+    videoUrl?: string;
+    blob?: Blob;
+  }
+  let vlogs: Vlog[] = [];
+  let recordingStartTime: Date | null = null;
+  let recordingTimer: number | null = null;
+  let vlogCount = 0;
+  let currentRecordingChunks: Blob[] = []; // New array to store current recording session chunks
+
+  // DOM elements
+  const videoPreview = document.getElementById("video-preview");
+  const canvas = document.getElementById("videoCanvas") as HTMLCanvasElement;
+  const recordButton = document.getElementById(
+    "recordButton"
+  ) as HTMLButtonElement;
+  const stopButton = document.getElementById("stopButton") as HTMLButtonElement;
+  const saveVlogBtn = document.getElementById("save-vlog") as HTMLButtonElement;
+  const vlogTitleInput = document.getElementById(
+    "vlog-title"
+  ) as HTMLInputElement;
+  const vlogsContainer = document.getElementById("vlogs-container");
+  const sortNewestBtn = document.getElementById(
+    "sort-newest"
+  ) as HTMLButtonElement;
+  const sortOldestBtn = document.getElementById(
+    "sort-oldest"
+  ) as HTMLButtonElement;
+  const statusIndicator = document.getElementById("status-indicator");
+  const statusText = document.getElementById("status-text") as HTMLSpanElement;
+  const currentDateEl = document.getElementById(
+    "current-date"
+  ) as HTMLDivElement;
+
+  // Initialize the application
+  document.addEventListener("DOMContentLoaded", async () => {
+    loadVlogs();
+
+    // Set up canvas
+    if (canvas) {
+      canvasContext = canvas.getContext("2d");
+      canvas.width = 1280; // 720p
+      canvas.height = 720;
+    }
+
+    // Start camera feed immediately
+    try {
+      videoStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: 1280,
+          height: 720,
+          facingMode: "user",
+        },
+        audio: true,
+      });
+
+      videoElement = document.createElement("video");
+      // videoElement.width = 1280;
+      // videoElement.height = 720;
+      videoElement.srcObject = videoStream;
+      videoElement.autoplay = true;
+      videoElement.muted = true;
+      videoElement.playsInline = true;
+
+      // Add video element to the document (hidden)
+      videoElement.style.display = "none";
+      document.body.appendChild(videoElement);
+
+      // Wait for video to be ready and playing
+      await videoElement.play();
+
+      // Start the canvas render loop
+      updateCanvas();
+    } catch (error) {
+      console.error("Error accessing camera:", error);
+      alert("Could not access camera. Please check permissions.");
+    }
+
+    // Set up event listeners
+    if (recordButton) recordButton.addEventListener("click", toggleRecording);
+    if (stopButton) stopButton.addEventListener("click", stopRecording);
+    if (saveVlogBtn) saveVlogBtn.addEventListener("click", saveVlog);
+    if (sortNewestBtn)
+      sortNewestBtn.addEventListener("click", () => sortVlogs("newest"));
+    if (sortOldestBtn)
+      sortOldestBtn.addEventListener("click", () => sortVlogs("oldest"));
+
+    updateDateTime();
+    setInterval(updateDateTime, 1000);
+  });
+
+  function updateCanvas() {
+    if (videoElement && canvasContext && canvas) {
+      // Clear the canvas
+      canvasContext.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw video frame
+      try {
+        canvasContext.drawImage(
+          videoElement,
+          0,
+          0,
+          canvas.width,
+          canvas.height
+        );
+      } catch (error) {
+        console.error("Error drawing video frame:", error);
+      }
+
+      // Draw overlay text
+      canvasContext.fillStyle = "rgba(0, 0, 0, 0.5)";
+      canvasContext.fillRect(0, 0, canvas.width, 30);
+
+      canvasContext.font = '16px "JetBrains Mono"';
+      canvasContext.fillStyle = "#e2f3f5";
+
+      const now = new Date();
+      const dateStr = now.toISOString().replace("T", " ").substring(0, 19);
+      canvasContext.fillText(`UTC: ${dateStr}`, 10, 20);
+      canvasContext.fillText(
+        `VLOG #${vlogs.length + 1}`,
+        canvas.width - 100,
+        20
+      );
+
+      if (isRecording) {
+        canvasContext.fillStyle = "#bf616a";
+        canvasContext.fillText(`● REC`, canvas.width - 200, 20);
+      }
+    }
+
+    requestAnimationFrame(updateCanvas);
+  }
+
+  function toggleRecording() {
+    if (isRecording) {
+      pauseRecording();
+    } else {
+      startRecording();
+    }
+  }
+
+  // Function to start recording
+  async function startRecording() {
+    if (!videoStream || !canvas) return;
+
+    try {
+      const canvasStream = canvas.captureStream(30); // 30 fps
+      const audioTrack = videoStream.getAudioTracks()[0];
+      canvasStream.addTrack(audioTrack);
+
+      mediaRecorder = new MediaRecorder(canvasStream);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          currentRecordingChunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        // When stopping, add the current session chunks to the main recordedChunks array
+        recordedChunks = recordedChunks.concat(currentRecordingChunks);
+        currentRecordingChunks = [];
+        if (saveVlogBtn) saveVlogBtn.disabled = false;
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      recordingStartTime = new Date();
+
+      // Update UI
+      if (recordButton) recordButton.innerHTML = '<i class="fas fa-pause"></i>';
+      if (stopButton) stopButton.disabled = false;
+      if (statusIndicator) {
+        statusIndicator.classList.remove("status-idle");
+        statusIndicator.classList.add("status-recording");
+      }
+      if (statusText) statusText.textContent = "RECORDING";
+    } catch (error) {
+      console.error("Error starting recording:", error);
+      alert("Could not start recording. Please check permissions.");
+    }
+  }
+
+  function pauseRecording() {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.pause();
+      isRecording = false;
+      if (recordButton)
+        recordButton.innerHTML = '<i class="fas fa-circle"></i>';
+      if (statusText) statusText.textContent = "PAUSED";
+    }
+  }
+
+  // Function to stop recording
+  function stopRecording() {
+    if (mediaRecorder) {
+      mediaRecorder.stop();
+      isRecording = false;
+
+      // Update UI
+      if (recordButton)
+        recordButton.innerHTML = '<i class="fas fa-circle"></i>';
+      if (stopButton) stopButton.disabled = true;
+      if (statusIndicator) {
+        statusIndicator.classList.remove("status-recording");
+        statusIndicator.classList.add("status-idle");
+      }
+      if (statusText) statusText.textContent = "COMPLETE";
+    }
+  }
+
+  // Function to save the recorded vlog
+  async function saveVlog() {
+    const title =
+      vlogTitleInput?.value.trim() ||
+      `Vlog ${new Date().toISOString().substring(0, 10)}`;
+    const date = new Date();
+
+    if (recordedChunks.length === 0) {
+      alert("No recording to save.");
+      return;
+    }
+
+    const blob = new Blob(recordedChunks, { type: "video/webm" });
+    const videoUrl = URL.createObjectURL(blob);
+
+    // Save to desktop
+    try {
+      // @ts-ignore - showSaveFilePicker is not yet in TypeScript definitions
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `vlog_${date.toISOString().split("T")[0]}.webm`,
+        types: [
+          {
+            description: "WebM video",
+            accept: { "video/webm": [".webm"] },
+          },
+        ],
+      });
+
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+    } catch (err) {
+      console.error("Error saving to desktop:", err);
+    }
+
+    const newVlog: Vlog = {
+      id: Date.now().toString(),
+      title: title || `Vlog ${date.toISOString().substring(0, 10)}`,
+      date,
+      videoUrl,
+      blob,
+    };
+
+    vlogs.unshift(newVlog);
+    saveVlogsToLocalStorage();
+    renderVlogs();
+
+    // Reset recording state
+    recordedChunks = [];
+    currentRecordingChunks = [];
+    if (vlogTitleInput) vlogTitleInput.value = "";
+    if (saveVlogBtn) saveVlogBtn.disabled = true;
+    if (statusText) statusText.textContent = "SAVED";
+  }
+
+  // Function to save vlogs to localStorage
+  function saveVlogsToLocalStorage() {
+    try {
+      const vlogsForStorage = vlogs.map((vlog) => ({
+        id: vlog.id,
+        title: vlog.title,
+        date: vlog.date,
+        // Don't store the videoUrl as it's not persistent
+      }));
+
+      localStorage.setItem("vlogs", JSON.stringify(vlogsForStorage));
+    } catch (error) {
+      console.error("Error saving vlogs:", error);
+    }
+  }
+
+  // Function to load vlogs from localStorage
+  async function loadVlogs() {
+    try {
+      const savedVlogsMetadata = localStorage.getItem("vlogs");
+
+      if (savedVlogsMetadata) {
+        vlogs = JSON.parse(savedVlogsMetadata);
+        renderVlogs();
+      }
+    } catch (error) {
+      console.error("Error loading vlogs:", error);
+    }
+  }
+
+  // Function to handle folder upload
+  async function handleFolderUpload(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (!input.files?.length) return;
+
+    const files = Array.from(input.files);
+    const videoFiles = files.filter((file) => file.name.endsWith(".webm"));
+
+    for (const file of videoFiles) {
+      try {
+        const videoUrl = URL.createObjectURL(file);
+        const date = new Date(file.lastModified);
+        const title = file.name.replace(".webm", "");
+
+        // Check if this video already exists in the archive
+        const existingVlog = vlogs.find((v) => v.title === title);
+        if (existingVlog) {
+          // Update the existing vlog with new video data
+          if (existingVlog.videoUrl) {
+            URL.revokeObjectURL(existingVlog.videoUrl);
+          }
+          existingVlog.videoUrl = videoUrl;
+          existingVlog.blob = file;
+          existingVlog.date = date;
+        } else {
+          // Add new vlog
+          const newVlog: Vlog = {
+            id: Date.now().toString(),
+            title,
+            date,
+            videoUrl,
+            blob: file,
+          };
+          vlogs.unshift(newVlog);
+        }
+      } catch (err) {
+        console.error(`Error processing video file ${file.name}:`, err);
+      }
+    }
+
+    saveVlogsToLocalStorage();
+    renderVlogs();
+  }
+
+  // Function to render the vlogs
+  function renderVlogs() {
+    if (!vlogsContainer) return;
+
+    if (vlogs.length === 0) {
+      vlogsContainer.innerHTML = `
+        <div class="terminal-window">
+          <p class="text-xs text-center">// NO VLOGS FOUND</p>
+          <p class="text-xs text-center">// START RECORDING YOUR FIRST VLOG</p>
+          <div class="mt-4">
+            <input type="file" id="folder-upload" webkitdirectory directory multiple accept=".webm" class="hidden" />
+            <label for="folder-upload" class="btn btn-primary text-xs cursor-pointer">
+              UPLOAD VLOG FOLDER
+            </label>
+          </div>
+        </div>
+      `;
+
+      // Add event listener for folder upload
+      const folderUpload = document.getElementById("folder-upload");
+      if (folderUpload) {
+        folderUpload.addEventListener("change", handleFolderUpload);
+      }
+      return;
+    }
+
+    vlogsContainer.innerHTML = `
+      <div class="mb-4">
+        <input type="file" id="folder-upload" webkitdirectory directory multiple accept=".webm" class="hidden" />
+        <label for="folder-upload" class="btn btn-primary text-xs cursor-pointer">
+          UPLOAD VLOG FOLDER
+        </label>
+      </div>
+    `;
+
+    // Add event listener for folder upload
+    const folderUpload = document.getElementById("folder-upload");
+    if (folderUpload) {
+      folderUpload.addEventListener("change", handleFolderUpload);
+    }
+
+    vlogs.forEach((vlog) => {
+      const vlogDate = new Date(vlog.date);
+      const formattedDate = vlogDate
+        .toISOString()
+        .replace("T", " ")
+        .substring(0, 19);
+
+      const vlogElement = document.createElement("div");
+      vlogElement.className = `vlog-card mb-4 ${!vlog.videoUrl ? "missing-video" : ""}`;
+
+      const videoContent = vlog.videoUrl
+        ? `<video controls class="archive-video">
+            <source src="${vlog.videoUrl}" type="video/webm">
+            Your browser does not support the video tag.
+          </video>`
+        : `<div class="flex items-center justify-center text-xs text-center opacity-70">
+            <div>
+              <p>// VIDEO FILE MISSING</p>
+              <p class="mt-2">Upload folder to restore video</p>
+            </div>
+          </div>`;
+
+      vlogElement.innerHTML = `
+        <div class="flex justify-between items-start mb-2">
+          <div>
+            <div class="timestamp">${formattedDate}</div>
+            <h3 class="text-lg font-medium">${vlog.title}</h3>
+          </div>
+          <div class="log-entry-id text-xs opacity-70">#${vlog.id.substring(0, 8)}</div>
+        </div>
+        <div class="log-entry mb-3 ${!vlog.videoUrl ? "missing" : ""}">
+          ${videoContent}
+        </div>
+        <div class="flex justify-end gap-2">
+          ${vlog.videoUrl ? `<button class="btn btn-secondary text-xs" onclick="downloadVlog('${vlog.id}')">DOWNLOAD</button>` : ""}
+          <button class="btn btn-danger text-xs" onclick="deleteVlog('${vlog.id}')">DELETE</button>
+        </div>
+      `;
+
+      vlogsContainer.appendChild(vlogElement);
+    });
+  }
+
+  // Function to sort vlogs
+  function sortVlogs(order: "newest" | "oldest") {
+    if (order === "newest") {
+      vlogs.sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+      );
+      sortNewestBtn?.classList.add("btn-primary");
+      sortNewestBtn?.classList.remove("btn-secondary");
+      sortOldestBtn?.classList.add("btn-secondary");
+      sortOldestBtn?.classList.remove("btn-primary");
+    } else {
+      vlogs.sort(
+        (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+      );
+      sortOldestBtn?.classList.add("btn-primary");
+      sortOldestBtn?.classList.remove("btn-secondary");
+      sortNewestBtn?.classList.add("btn-secondary");
+      sortNewestBtn?.classList.remove("btn-primary");
+    }
+
+    renderVlogs();
+  }
+
+  // Function to download a vlog
+  (window as any).downloadVlog = function (id: string) {
+    const vlog = vlogs.find((v) => v.id === id);
+
+    if (vlog && vlog.videoUrl) {
+      const a = document.createElement("a");
+      a.href = vlog.videoUrl;
+      a.download = `vlog_${vlog.title.replace(/\s+/g, "_")}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  };
+
+  // Function to delete a vlog
+  (window as any).deleteVlog = async function (id: string) {
+    if (confirm("Delete this vlog?")) {
+      const index = vlogs.findIndex((v) => v.id === id);
+
+      if (index !== -1) {
+        // Revoke the object URL to free up memory
+        if (vlogs[index].videoUrl) {
+          URL.revokeObjectURL(vlogs[index].videoUrl);
+        }
+        vlogs.splice(index, 1);
+        saveVlogsToLocalStorage();
+        renderVlogs();
+      }
+    }
+  };
+
+  // Function to update date
+  function updateDateTime() {
+    const now = new Date();
+    const dateStr = now.toISOString().replace("T", " ").substring(0, 19);
+    currentDateEl.textContent = `UTC: ${dateStr}`;
+  }
+</script>
