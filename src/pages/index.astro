@@ -62,6 +62,12 @@ import Layout from "../layouts/Layout.astro";
           </button>
         </div>
       </div>
+
+      <!-- Transcript Section -->
+      <div class="transcript-container mt-4" id="transcript-container">
+        <h3 class="text-md font-semibold uppercase mb-2">Transcript</h3>
+        <div id="transcript-text" class="transcript-text"></div>
+      </div>
     </section>
   </div>
 </Layout>
@@ -80,12 +86,33 @@ import Layout from "../layouts/Layout.astro";
     date: Date;
     videoUrl?: string;
     blob?: Blob;
+    transcript?: TranscriptData;
   }
+
+  interface TranscriptEntry {
+    timestamp: number; // Time in milliseconds from recording start
+    text: string;
+  }
+
+  interface TranscriptData {
+    entries: TranscriptEntry[];
+    fullText: string;
+  }
+
   let vlogs: Vlog[] = [];
   let recordingStartTime: Date | null = null;
   let recordingTimer: number | null = null;
   let vlogCount = 0;
   let currentRecordingChunks: Blob[] = []; // New array to store current recording session chunks
+
+  // Transcript variables
+  let recognition: SpeechRecognition | null = null;
+  let isTranscribing = false;
+  let currentTranscript: TranscriptData = {
+    entries: [],
+    fullText: "",
+  };
+  let transcriptStartTime: number = 0;
 
   // DOM elements
   const videoPreview = document.getElementById("video-preview");
@@ -110,6 +137,9 @@ import Layout from "../layouts/Layout.astro";
   const currentDateEl = document.getElementById(
     "current-date"
   ) as HTMLDivElement;
+  const transcriptText = document.getElementById(
+    "transcript-text"
+  ) as HTMLDivElement;
 
   // Initialize the application
   document.addEventListener("DOMContentLoaded", async () => {
@@ -121,6 +151,9 @@ import Layout from "../layouts/Layout.astro";
       canvas.width = 1280; // 720p
       canvas.height = 720;
     }
+
+    // Initialize Web Speech API
+    setupSpeechRecognition();
 
     // Start camera feed immediately
     try {
@@ -211,63 +244,146 @@ import Layout from "../layouts/Layout.astro";
     requestAnimationFrame(updateCanvas);
   }
 
-  function toggleRecording() {
-    if (isRecording) {
-      pauseRecording();
-    } else {
-      startRecording();
+  // Function to set up speech recognition
+  function setupSpeechRecognition() {
+    // Check if browser supports speech recognition
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn("Speech recognition not supported in this browser");
+      return;
     }
+
+    // Create speech recognition instance
+    recognition = new SpeechRecognition();
+
+    // Ensure recognition is not null from this point
+    if (!recognition) return;
+
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    // Handle results
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      if (!recordingStartTime) return;
+
+      const currentTime = new Date().getTime();
+      const elapsedTime = currentTime - recordingStartTime.getTime();
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        const isFinal = event.results[i].isFinal;
+
+        if (isFinal) {
+          // Add entry to transcript data
+          currentTranscript.entries.push({
+            timestamp: elapsedTime,
+            text: transcript,
+          });
+
+          // Update full text
+          currentTranscript.fullText +=
+            (currentTranscript.fullText ? " " : "") + transcript;
+
+          // Update the UI
+          updateTranscriptUI();
+        }
+      }
+    };
+
+    // Handle errors
+    recognition.onerror = (event: SpeechRecognitionError) => {
+      console.error("Speech recognition error", event.error);
+
+      // Attempt to restart if error occurs during recording
+      if (isTranscribing) {
+        setTimeout(() => {
+          try {
+            recognition!.start();
+          } catch (e) {
+            console.error("Failed to restart speech recognition", e);
+          }
+        }, 1000);
+      }
+    };
+
+    // Restart when recognition ends
+    recognition.onend = () => {
+      if (isTranscribing) {
+        try {
+          recognition!.start();
+        } catch (e) {
+          console.error("Failed to restart speech recognition", e);
+        }
+      }
+    };
   }
 
-  // Function to start recording
-  async function startRecording() {
-    if (!videoStream || !canvas) return;
+  // Function to update transcript UI
+  function updateTranscriptUI() {
+    if (!transcriptText) return;
+
+    // Clear current content
+    transcriptText.innerHTML = "";
+
+    // Add each transcript entry
+    currentTranscript.entries.forEach((entry) => {
+      const entryElement = document.createElement("div");
+      entryElement.className = "transcript-entry";
+
+      // Format timestamp as MM:SS.ms
+      const totalSeconds = Math.floor(entry.timestamp / 1000);
+      const minutes = Math.floor(totalSeconds / 60)
+        .toString()
+        .padStart(2, "0");
+      const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+      const milliseconds = Math.floor((entry.timestamp % 1000) / 10)
+        .toString()
+        .padStart(2, "0");
+      const timeFormatted = `${minutes}:${seconds}.${milliseconds}`;
+
+      entryElement.innerHTML = `<span class="transcript-time">[${timeFormatted}]</span>${entry.text}`;
+      transcriptText.appendChild(entryElement);
+    });
+
+    // Scroll to bottom
+    transcriptText.scrollTop = transcriptText.scrollHeight;
+  }
+
+  // Function to start transcription
+  function startTranscription() {
+    if (!recognition) {
+      setupSpeechRecognition();
+      if (!recognition) return;
+    }
 
     try {
-      const canvasStream = canvas.captureStream(30); // 30 fps
-      const audioTrack = videoStream.getAudioTracks()[0];
-      canvasStream.addTrack(audioTrack);
-
-      mediaRecorder = new MediaRecorder(canvasStream);
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          currentRecordingChunks.push(event.data);
-        }
+      // Reset transcript data
+      currentTranscript = {
+        entries: [],
+        fullText: "",
       };
 
-      mediaRecorder.onstop = () => {
-        // When stopping, add the current session chunks to the main recordedChunks array
-        recordedChunks = recordedChunks.concat(currentRecordingChunks);
-        currentRecordingChunks = [];
-        if (saveVlogBtn) saveVlogBtn.disabled = false;
-      };
-
-      mediaRecorder.start();
-      isRecording = true;
-      recordingStartTime = new Date();
-
-      // Update UI
-      if (recordButton) recordButton.innerHTML = '<i class="fas fa-pause"></i>';
-      if (stopButton) stopButton.disabled = false;
-      if (statusIndicator) {
-        statusIndicator.classList.remove("status-idle");
-        statusIndicator.classList.add("status-recording");
+      // Clear UI
+      if (transcriptText) {
+        transcriptText.innerHTML =
+          '<div class="text-xs opacity-70">Listening...</div>';
       }
-      if (statusText) statusText.textContent = "RECORDING";
+
+      // Start recognition
+      recognition.start();
+      isTranscribing = true;
     } catch (error) {
-      console.error("Error starting recording:", error);
-      alert("Could not start recording. Please check permissions.");
+      console.error("Error starting transcription:", error);
     }
   }
 
-  function pauseRecording() {
-    if (mediaRecorder && isRecording) {
-      mediaRecorder.pause();
-      isRecording = false;
-      if (recordButton)
-        recordButton.innerHTML = '<i class="fas fa-circle"></i>';
-      if (statusText) statusText.textContent = "PAUSED";
+  // Function to stop transcription
+  function stopTranscription() {
+    if (recognition && isTranscribing) {
+      recognition.stop();
+      isTranscribing = false;
     }
   }
 
@@ -276,6 +392,9 @@ import Layout from "../layouts/Layout.astro";
     if (mediaRecorder) {
       mediaRecorder.stop();
       isRecording = false;
+
+      // Stop transcription
+      stopTranscription();
 
       // Update UI
       if (recordButton)
@@ -304,7 +423,7 @@ import Layout from "../layouts/Layout.astro";
     const blob = new Blob(recordedChunks, { type: "video/webm" });
     const videoUrl = URL.createObjectURL(blob);
 
-    // Save to desktop
+    // Save video to desktop
     try {
       // @ts-ignore - showSaveFilePicker is not yet in TypeScript definitions
       const handle = await window.showSaveFilePicker({
@@ -320,6 +439,12 @@ import Layout from "../layouts/Layout.astro";
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
+
+      // Save transcript if available
+      if (currentTranscript && currentTranscript.entries.length > 0) {
+        const transcriptFilename = `vlog_${date.toISOString().split("T")[0]}_transcript.json`;
+        await saveTranscriptToFile(currentTranscript, transcriptFilename);
+      }
     } catch (err) {
       console.error("Error saving to desktop:", err);
     }
@@ -330,6 +455,7 @@ import Layout from "../layouts/Layout.astro";
       date,
       videoUrl,
       blob,
+      transcript: currentTranscript,
     };
 
     vlogs.unshift(newVlog);
@@ -339,6 +465,8 @@ import Layout from "../layouts/Layout.astro";
     // Reset recording state
     recordedChunks = [];
     currentRecordingChunks = [];
+    currentTranscript = { entries: [], fullText: "" };
+    if (transcriptText) transcriptText.innerHTML = "";
     if (vlogTitleInput) vlogTitleInput.value = "";
     if (saveVlogBtn) saveVlogBtn.disabled = true;
     if (statusText) statusText.textContent = "SAVED";
@@ -351,6 +479,7 @@ import Layout from "../layouts/Layout.astro";
         id: vlog.id,
         title: vlog.title,
         date: vlog.date,
+        transcript: vlog.transcript,
         // Don't store the videoUrl as it's not persistent
       }));
 
@@ -494,6 +623,7 @@ import Layout from "../layouts/Layout.astro";
         </div>
         <div class="flex justify-end gap-2">
           ${vlog.videoUrl ? `<button class="btn btn-secondary text-xs" onclick="downloadVlog('${vlog.id}')">DOWNLOAD</button>` : ""}
+          ${vlog.transcript && vlog.transcript.entries.length > 0 ? `<button class="btn btn-secondary text-xs" onclick="downloadTranscript('${vlog.id}')">DOWNLOAD TRANSCRIPT</button>` : ""}
           <button class="btn btn-danger text-xs" onclick="deleteVlog('${vlog.id}')">DELETE</button>
         </div>
       `;
@@ -539,6 +669,26 @@ import Layout from "../layouts/Layout.astro";
     }
   };
 
+  // Function to download a transcript
+  (window as any).downloadTranscript = function (id: string) {
+    const vlog = vlogs.find((v) => v.id === id);
+
+    if (vlog && vlog.transcript) {
+      const transcriptBlob = new Blob(
+        [JSON.stringify(vlog.transcript, null, 2)],
+        { type: "application/json" }
+      );
+      const url = URL.createObjectURL(transcriptBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `vlog_${vlog.title.replace(/\s+/g, "_")}_transcript.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+  };
+
   // Function to delete a vlog
   (window as any).deleteVlog = async function (id: string) {
     if (confirm("Delete this vlog?")) {
@@ -561,5 +711,100 @@ import Layout from "../layouts/Layout.astro";
     const now = new Date();
     const dateStr = now.toISOString().replace("T", " ").substring(0, 19);
     currentDateEl.textContent = `UTC: ${dateStr}`;
+  }
+
+  // Function to save transcript to a JSON file
+  async function saveTranscriptToFile(
+    transcript: TranscriptData,
+    filename: string
+  ) {
+    try {
+      const transcriptBlob = new Blob([JSON.stringify(transcript, null, 2)], {
+        type: "application/json",
+      });
+
+      // Use the File System Access API to save
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [
+          {
+            description: "JSON File",
+            accept: { "application/json": [".json"] },
+          },
+        ],
+      });
+
+      const writable = await handle.createWritable();
+      await writable.write(transcriptBlob);
+      await writable.close();
+
+      return true;
+    } catch (error) {
+      console.error("Error saving transcript:", error);
+      return false;
+    }
+  }
+
+  function toggleRecording() {
+    if (isRecording) {
+      pauseRecording();
+    } else {
+      startRecording();
+    }
+  }
+
+  // Function to start recording
+  async function startRecording() {
+    if (!videoStream || !canvas) return;
+
+    try {
+      const canvasStream = canvas.captureStream(30); // 30 fps
+      const audioTrack = videoStream.getAudioTracks()[0];
+      canvasStream.addTrack(audioTrack);
+
+      mediaRecorder = new MediaRecorder(canvasStream);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          currentRecordingChunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        // When stopping, add the current session chunks to the main recordedChunks array
+        recordedChunks = recordedChunks.concat(currentRecordingChunks);
+        currentRecordingChunks = [];
+        if (saveVlogBtn) saveVlogBtn.disabled = false;
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      recordingStartTime = new Date();
+
+      // Start transcription
+      startTranscription();
+
+      // Update UI
+      if (recordButton) recordButton.innerHTML = '<i class="fas fa-pause"></i>';
+      if (stopButton) stopButton.disabled = false;
+      if (statusIndicator) {
+        statusIndicator.classList.remove("status-idle");
+        statusIndicator.classList.add("status-recording");
+      }
+      if (statusText) statusText.textContent = "RECORDING";
+    } catch (error) {
+      console.error("Error starting recording:", error);
+      alert("Could not start recording. Please check permissions.");
+    }
+  }
+
+  function pauseRecording() {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.pause();
+      isRecording = false;
+      if (recordButton)
+        recordButton.innerHTML = '<i class="fas fa-circle"></i>';
+      if (statusText) statusText.textContent = "PAUSED";
+    }
   }
 </script>
