@@ -41,7 +41,6 @@ body {
 }
 
 .app-container {
-  max-width: 1200px;
   margin: 0 auto;
   padding: 2rem;
 }
@@ -57,7 +56,7 @@ body {
 
 .main-content {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 3fr;
   gap: 2rem;
 }
 
@@ -378,6 +377,7 @@ body {
   background-color: rgba(0, 0, 0, 0.3);
   max-height: 200px;
   overflow-y: auto;
+  margin-top: 1rem;
 }
 
 .transcript-text {
@@ -411,5 +411,14 @@ body {
   
   .app-container {
     padding: 1rem;
+  }
+  
+  /* Make sure archive is displayed first on mobile */
+  .archive-section {
+    order: 1;
+  }
+  
+  .recording-section {
+    order: 2;
   }
 } 
