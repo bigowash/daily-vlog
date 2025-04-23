@@ -61,6 +61,9 @@ import Layout from "../layouts/Layout.astro";
             <i class="fas fa-save"></i>
           </button>
         </div>
+        <button id="flip-camera" class="flip-camera-btn">
+          <i class="fas fa-sync-alt"></i>
+        </button>
       </div>
 
       <!-- Transcript Section -->
@@ -80,6 +83,10 @@ import Layout from "../layouts/Layout.astro";
   let isRecording = false;
   let canvasContext: CanvasRenderingContext2D | null = null;
   let videoElement: HTMLVideoElement | null = null;
+  let currentFacingMode: string = "user"; // Default to front camera
+  let recordingDuration: number = 0;
+  let recordingDurationInterval: number | null = null;
+
   interface Vlog {
     id: string;
     title: string;
@@ -101,7 +108,6 @@ import Layout from "../layouts/Layout.astro";
 
   let vlogs: Vlog[] = [];
   let recordingStartTime: Date | null = null;
-  let recordingTimer: number | null = null;
   let vlogCount = 0;
   let currentRecordingChunks: Blob[] = []; // New array to store current recording session chunks
 
@@ -140,6 +146,9 @@ import Layout from "../layouts/Layout.astro";
   const transcriptText = document.getElementById(
     "transcript-text"
   ) as HTMLDivElement;
+  const flipCameraBtn = document.getElementById(
+    "flip-camera"
+  ) as HTMLButtonElement;
 
   // Initialize the application
   document.addEventListener("DOMContentLoaded", async () => {
@@ -161,7 +170,7 @@ import Layout from "../layouts/Layout.astro";
         video: {
           width: 1280,
           height: 720,
-          facingMode: "user",
+          facingMode: currentFacingMode,
         },
         audio: true,
       });
@@ -196,6 +205,7 @@ import Layout from "../layouts/Layout.astro";
       sortNewestBtn.addEventListener("click", () => sortVlogs("newest"));
     if (sortOldestBtn)
       sortOldestBtn.addEventListener("click", () => sortVlogs("oldest"));
+    if (flipCameraBtn) flipCameraBtn.addEventListener("click", flipCamera);
 
     updateDateTime();
     setInterval(updateDateTime, 1000);
@@ -236,8 +246,15 @@ import Layout from "../layouts/Layout.astro";
       );
 
       if (isRecording) {
+        // Format duration as MM:SS
+        const minutes = Math.floor(recordingDuration / 60)
+          .toString()
+          .padStart(2, "0");
+        const seconds = (recordingDuration % 60).toString().padStart(2, "0");
+        const durationStr = `${minutes}:${seconds}`;
+
         canvasContext.fillStyle = "#bf616a";
-        canvasContext.fillText(`● REC`, canvas.width - 200, 20);
+        canvasContext.fillText(`● REC ${durationStr}`, canvas.width - 200, 20);
       }
     }
 
@@ -393,6 +410,12 @@ import Layout from "../layouts/Layout.astro";
       mediaRecorder.stop();
       isRecording = false;
 
+      // Stop duration timer
+      if (recordingDurationInterval) {
+        clearInterval(recordingDurationInterval);
+        recordingDurationInterval = null;
+      }
+
       // Stop transcription
       stopTranscription();
 
@@ -510,12 +533,17 @@ import Layout from "../layouts/Layout.astro";
 
     const files = Array.from(input.files);
     const videoFiles = files.filter((file) => file.name.endsWith(".webm"));
+    const transcriptFiles = files.filter((file) => file.name.endsWith(".json"));
 
+    // Process video files
     for (const file of videoFiles) {
       try {
         const videoUrl = URL.createObjectURL(file);
         const date = new Date(file.lastModified);
-        const title = file.name.replace(".webm", "");
+        // Remove the .webm extension and possible _transcript suffix
+        const title = file.name
+          .replace(/_transcript.*$/, "")
+          .replace(/\.webm$/, "");
 
         // Check if this video already exists in the archive
         const existingVlog = vlogs.find((v) => v.title === title);
@@ -543,6 +571,44 @@ import Layout from "../layouts/Layout.astro";
       }
     }
 
+    // Process transcript files
+    for (const file of transcriptFiles) {
+      try {
+        // Extract base name (remove .json extension)
+        const baseName = file.name.replace(/\_transcript\.json$/, "");
+
+        // Find corresponding vlog
+        const matchingVlog = vlogs.find(
+          (vlog) =>
+            vlog.title === baseName ||
+            `vlog_${vlog.title.replace(/\s+/g, "_")}` === baseName
+        );
+
+        if (matchingVlog) {
+          // Read the transcript file
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              const transcriptData = JSON.parse(
+                e.target?.result as string
+              ) as TranscriptData;
+              matchingVlog.transcript = transcriptData;
+              saveVlogsToLocalStorage();
+              renderVlogs();
+            } catch (parseErr) {
+              console.error(
+                `Error parsing transcript file ${file.name}:`,
+                parseErr
+              );
+            }
+          };
+          reader.readAsText(file);
+        }
+      } catch (err) {
+        console.error(`Error processing transcript file ${file.name}:`, err);
+      }
+    }
+
     saveVlogsToLocalStorage();
     renderVlogs();
   }
@@ -556,8 +622,8 @@ import Layout from "../layouts/Layout.astro";
         <div class="terminal-window">
           <p class="text-xs text-center">// NO VLOGS FOUND</p>
           <p class="text-xs text-center">// START RECORDING YOUR FIRST VLOG</p>
-          <div class="mt-4">
-            <input type="file" id="folder-upload" webkitdirectory directory multiple accept=".webm" class="hidden" />
+          <div class="mt-4 flex justify-center">
+            <input type="file" id="folder-upload" webkitdirectory directory multiple accept=".webm,.json" class="hidden" />
             <label for="folder-upload" class="btn btn-primary text-xs cursor-pointer">
               UPLOAD VLOG FOLDER
             </label>
@@ -574,8 +640,8 @@ import Layout from "../layouts/Layout.astro";
     }
 
     vlogsContainer.innerHTML = `
-      <div class="mb-4">
-        <input type="file" id="folder-upload" webkitdirectory directory multiple accept=".webm" class="hidden" />
+      <div class="mb-4 flex justify-center">
+        <input type="file" id="folder-upload" webkitdirectory directory multiple accept=".webm,.json" class="hidden" />
         <label for="folder-upload" class="btn btn-primary text-xs cursor-pointer">
           UPLOAD VLOG FOLDER
         </label>
@@ -781,6 +847,12 @@ import Layout from "../layouts/Layout.astro";
       isRecording = true;
       recordingStartTime = new Date();
 
+      // Reset and start duration timer
+      recordingDuration = 0;
+      recordingDurationInterval = setInterval(() => {
+        recordingDuration++;
+      }, 1000);
+
       // Start transcription
       startTranscription();
 
@@ -802,9 +874,50 @@ import Layout from "../layouts/Layout.astro";
     if (mediaRecorder && isRecording) {
       mediaRecorder.pause();
       isRecording = false;
+
+      // Pause duration timer
+      if (recordingDurationInterval) {
+        clearInterval(recordingDurationInterval);
+        recordingDurationInterval = null;
+      }
+
       if (recordButton)
         recordButton.innerHTML = '<i class="fas fa-circle"></i>';
       if (statusText) statusText.textContent = "PAUSED";
+    }
+  }
+
+  // Function to flip the camera
+  async function flipCamera() {
+    if (isRecording) return; // Don't allow camera flip while recording
+
+    // Toggle facing mode
+    currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+
+    // Stop current video stream
+    if (videoStream) {
+      videoStream.getTracks().forEach((track) => track.stop());
+    }
+
+    // Get new video stream with different facing mode
+    try {
+      videoStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: 1280,
+          height: 720,
+          facingMode: currentFacingMode,
+        },
+        audio: true,
+      });
+
+      // Update video element
+      if (videoElement) {
+        videoElement.srcObject = videoStream;
+        await videoElement.play();
+      }
+    } catch (error) {
+      console.error("Error flipping camera:", error);
+      alert("Could not flip camera. Please check permissions.");
     }
   }
 </script>

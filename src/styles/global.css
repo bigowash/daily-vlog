@@ -421,4 +421,27 @@ body {
   .recording-section {
     order: 2;
   }
+}
+
+.flip-camera-btn {
+  position: absolute;
+  bottom: 1rem;
+  right: 1rem;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.6);
+  color: white;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  z-index: 10;
+}
+
+.flip-camera-btn:hover {
+  transform: scale(1.1);
+  background-color: rgba(0, 0, 0, 0.8);
 } 
